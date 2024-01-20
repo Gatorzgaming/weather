@@ -23,6 +23,7 @@ namespace Drizzle.UI.UWP.Factories
             {
                 WeatherProviders.OpenMeteo => GetService(typeof(OpenMeteoWeatherClient)),
                 WeatherProviders.OpenWeatherMap => GetService(typeof(OpenWeatherMapWeatherClient)),
+                WeatherProviders.NWS => GetService(typeof(NwsWeatherClient)),
                 _ => throw new NotImplementedException(),
             };
         }
