@@ -136,8 +136,6 @@ namespace Drizzle.UI.UWP
                 .AddSingleton<ISoundService, SoundService>()
                 .AddSingleton<IAssetReader, AssetReader>()
                 .AddSingleton<IWeatherClient, OpenMeteoWeatherClient>()
-                //NWS TESTINGGGGG
-                .AddSingleton<IWeatherClient, NwsWeatherClient>()
                 .AddSingleton<IWeatherClient>((e) => new OpenWeatherMapWeatherClient(
                     e.GetRequiredService<IHttpClientFactory>(),
                     e.GetRequiredService<ICacheService>(),

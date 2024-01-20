@@ -38,8 +38,7 @@ namespace Drizzle.Common
     public enum WeatherProviders
     {
         OpenMeteo,
-        OpenWeatherMap,
-        NWS
+        OpenWeatherMap
     }
 
     //Ref:
