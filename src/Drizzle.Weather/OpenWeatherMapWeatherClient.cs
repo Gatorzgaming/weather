@@ -5,8 +5,10 @@ using Drizzle.Models.Weather.OpenWeatherMap;
 using Drizzle.Weather.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
@@ -61,33 +63,73 @@ public class OpenWeatherMapWeatherClient : IWeatherClient
         // Group the data based on date as key
         var dailyGroup = forecastResponse.List.GroupBy(x => TimeUtil.UnixToLocalDateTime(x.Dt, result.TimeZone).Date);
         var dailyWeather = new List<DailyWeather>();
+        var currentTime = TimeUtil.GetLocalTime(result.TimeZone) ?? DateTime.Now;
         var index = 0;
         // Unit ref: https://openweathermap.org/weather-data
         foreach (var day in dailyGroup)
         {
-            var selection = GetValueCloseToTime(day, result.TimeZone);
-            var weather = new DailyWeather()
+            // If data is starting from previous day then discard, can happen(?) if close to midnight.
+            if (index == 0 && day.Key.Date != currentTime.Date)
+                continue;
+
+            var severeDayWeather = GetMostSevereWeather(day.Select(x => OpenWeatherMapCodeToWmo(x.Weather[0].Id)));
+            var currentValue = index == 0 ?
+                // Select the weather closest to current time.
+                day.OrderBy(t => Math.Abs((TimeUtil.UnixToLocalDateTime(t.Dt, result.TimeZone).TimeOfDay - currentTime.TimeOfDay).Ticks)).First() :
+                // Pick a point in time with severe weather.
+                day.First(x => OpenWeatherMapCodeToWmo(x.Weather[0].Id) == severeDayWeather);
+
+            var weather = index == 0 ? new DailyWeather()
             {
-                WeatherCode = (int)OpenWeatherMapCodeToWmo(selection.Weather[0].Id),
-                Date = TimeUtil.UnixToLocalDateTime(day.First().Dt, result.TimeZone),
+                WeatherCode = (int)OpenWeatherMapCodeToWmo(currentResponse.Weather[0].Id),
+                StartTime = TimeUtil.UnixToLocalDateTime(day.First().Dt, result.TimeZone),
                 // Only current day
-                Sunrise = index == 0 ? TimeUtil.UnixToLocalDateTime(currentResponse.Sys.Sunrise, result.TimeZone) : null,
-                Sunset = index == 0 ? TimeUtil.UnixToLocalDateTime(currentResponse.Sys.Sunset, result.TimeZone) : null,
+                Sunrise = TimeUtil.UnixToLocalDateTime(currentResponse.Sys.Sunrise, result.TimeZone),
+                Sunset = TimeUtil.UnixToLocalDateTime(currentResponse.Sys.Sunset, result.TimeZone),
                 TemperatureMin = day.OrderBy(x => x.Main.TempMin).First().Main.TempMin,
                 TemperatureMax = day.OrderByDescending(x => x.Main.TempMax).First().Main.TempMax,
                 // Not available
                 //ApparentTemperatureMin =
                 //ApparentTemperatureMax =
-                WindSpeed = index == 0 ? currentResponse.Wind.Speed * 3.6f : selection.Wind.Speed * 3.6f, // meter/s -> km/h
-                GustSpeed = index == 0 ? currentResponse.Wind.Gust * 3.6f : selection.Wind.Gust * 3.6f,
-                Temperature = index == 0 ? currentResponse.Main.Temp : selection.Main.Temp,
-                ApparentTemperature = index == 0 ? currentResponse.Main.FeelsLike : selection.Main.FeelsLike,
-                Visibility = index == 0 ? currentResponse.Main.FeelsLike / 1000f : selection.Visibility / 1000f, //meter -> km
-                Humidity = index == 0 ? (int)currentResponse.Main.Humidity : (int)selection.Main.Humidity,
+                WindSpeed = currentResponse.Wind.Speed * 3.6f, // meter/s -> km/h
+                GustSpeed = currentResponse.Wind.Gust * 3.6f,
+                Temperature = currentResponse.Main.Temp,
+                ApparentTemperature = currentResponse.Main.FeelsLike,
+                Visibility = currentResponse.Main.FeelsLike / 1000f, //meter -> km
+                Humidity = (int)currentResponse.Main.Humidity,
                 // Not available
                 //DewPoint = 
-                Pressure = index == 0 ? currentResponse.Main.Pressure : selection.Main.Pressure,
-                WindDirection = index == 0 ? currentResponse.Wind.Deg : selection.Wind.Deg,
+                Pressure = currentResponse.Main.Pressure,
+                WindDirection = currentResponse.Wind.Deg,
+                HourlyWeatherCode = day.Select(x => (int)OpenWeatherMapCodeToWmo(x.Weather[0].Id)).ToArray(),
+                HourlyTemperature = day.Select(x => x.Main.Temp).ToArray(),
+                HourlyVisibility = day.Select(x => x.Visibility).ToArray(),
+                HourlyHumidity = day.Select(x => x.Main.Humidity).ToArray(),
+                HourlyPressure = day.Select(x => x.Main.Pressure).ToArray(),
+                HourlyWindSpeed = day.Select(x => x.Wind.Speed).ToArray(),
+            } : 
+            new DailyWeather()
+            {
+                WeatherCode = (int)OpenWeatherMapCodeToWmo(currentValue.Weather[0].Id),
+                StartTime = TimeUtil.UnixToLocalDateTime(day.First().Dt, result.TimeZone),
+                // Only current day
+                Sunrise = null,
+                Sunset = null,
+                TemperatureMin = day.OrderBy(x => x.Main.TempMin).First().Main.TempMin,
+                TemperatureMax = day.OrderByDescending(x => x.Main.TempMax).First().Main.TempMax,
+                // Not available
+                //ApparentTemperatureMin =
+                //ApparentTemperatureMax =
+                WindSpeed = currentValue.Wind.Speed * 3.6f, // meter/s -> km/h
+                GustSpeed = currentValue.Wind.Gust * 3.6f,
+                Temperature = currentValue.Main.Temp,
+                ApparentTemperature = currentValue.Main.FeelsLike,
+                Visibility = currentValue.Visibility / 1000f, //meter -> km
+                Humidity = (int)currentValue.Main.Humidity,
+                // Not available
+                //DewPoint = 
+                Pressure = currentValue.Main.Pressure,
+                WindDirection = currentValue.Wind.Deg,
                 HourlyWeatherCode = day.Select(x => (int)OpenWeatherMapCodeToWmo(x.Weather[0].Id)).ToArray(),
                 HourlyTemperature = day.Select(x => x.Main.Temp).ToArray(),
                 HourlyVisibility = day.Select(x => x.Visibility).ToArray(),
@@ -120,16 +162,20 @@ public class OpenWeatherMapWeatherClient : IWeatherClient
         // Group the data based on date
         var dailyGroup = forecastResponse.List.GroupBy(x => TimeUtil.UnixToLocalDateTime(x.Dt, result.TimeZone).Date);
         var dailyAirQuality = new List<DailyAirQuality>();
+        var currentTime = TimeUtil.GetLocalTime(result.TimeZone) ?? DateTime.Now;
         var index = 0;
         foreach (var day in dailyGroup)
         {
-            var selection = GetValueCloseToTime(day, result.TimeZone);
+            // If data is starting from previous day then discard, can happen(?) if close to midnight.
+            if (index == 0 && day.Key.Date != currentTime.Date)
+                continue;
+
+            var hourlyAqi = day.Select(x => CalculateAqi(x.Components) ?? 0f);
             var airQuality = new DailyAirQuality
             {
-                Date = TimeUtil.UnixToLocalDateTime(selection.Dt, result.TimeZone),
-                // Only calculating for the current day for the time being
-                AQI = index == 0 ? CalculateAqi(currentResponse.List[0].Components) : null,
-                HourlyAQI = index == 0 ? day.Select(x => CalculateAqi(x.Components) ?? 0f).ToArray() : null,
+                StartTime = TimeUtil.UnixToLocalDateTime(day.First().Dt, result.TimeZone),
+                AQI = index == 0 ? CalculateAqi(currentResponse.List[0].Components) : (int)hourlyAqi.Max(),
+                HourlyAQI = hourlyAqi.ToArray(),
                 // Not available
                 //HourlyUV = null,
                 //UV = null,
@@ -152,21 +198,31 @@ public class OpenWeatherMapWeatherClient : IWeatherClient
             response = await GetGeocodingDataAsync(place, 5);
 
         var result = new List<Location>();
+        var languageTag = CultureInfo.CurrentCulture.TwoLetterISOLanguageName;
         foreach (var item in response)
         {
+            string localName = null;
+            // Default is English, ignore.
+            if (languageTag != "en")
+                item.LocalNames?.TryGetValue(languageTag, out localName);
+
             var tmp = new Location()
             {
-                Name = item.Name,
+                Name = localName ?? item.Name,
+                DisplayName = localName ?? item.Name,
                 Country = item.Country,
                 Admin1 = item.State,
                 Latitude = item.Lat,
                 Longitude = item.Lon,
             };
-            tmp.DisplayName = item.Name;
-            if (item.State is not null && !item.State.Equals(item.Name, StringComparison.InvariantCulture))
-                tmp.DisplayName += $", {item.State}";
-            else if (item.Country is not null && !item.Country.Equals(item.Name, StringComparison.InvariantCulture))
-                tmp.DisplayName += $", {item.Country}";
+            // Do not append English names if localized.
+            if (localName is null)
+            {
+                if (item.State is not null && !item.State.Equals(item.Name, StringComparison.InvariantCulture))
+                    tmp.DisplayName += $", {item.State}";
+                else if (item.Country is not null && !item.Country.Equals(item.Name, StringComparison.InvariantCulture))
+                    tmp.DisplayName += $", {item.Country}";
+            }
             result.Add(tmp);
         }
         return result;
@@ -219,18 +275,6 @@ public class OpenWeatherMapWeatherClient : IWeatherClient
         return await JsonSerializer.DeserializeAsync<LocationData[]>(await response.Content.ReadAsStreamAsync(), new JsonSerializerOptions() { PropertyNameCaseInsensitive = true });
     }
 
-    private static ForecastList GetValueCloseToTime(IGrouping<DateTime, ForecastList> day, string timezone)
-    {
-        var currentTime = TimeUtil.GetLocalTime(timezone)?.TimeOfDay ?? DateTime.Now.TimeOfDay;
-        return day.OrderBy(t => Math.Abs((TimeUtil.UnixToLocalDateTime(t.Dt, timezone).TimeOfDay - currentTime).Ticks)).First();
-    }
-
-    private static AQList GetValueCloseToTime(IGrouping<DateTime, AQList> day, string timezone)
-    {
-        var currentTime = TimeUtil.GetLocalTime(timezone)?.TimeOfDay ?? DateTime.Now.TimeOfDay;
-        return day.OrderBy(t => Math.Abs((TimeUtil.UnixToLocalDateTime(t.Dt, timezone).TimeOfDay - currentTime).Ticks)).First();
-    }
-
     private static int? CalculateAqi(AQComponents components)
     {
         var aqiPM2_5 = AirQualityUtil.GetAirQuality(Models.AQI.Particle.PM2_5, components.Pm25);
@@ -242,6 +286,25 @@ public class OpenWeatherMapWeatherClient : IWeatherClient
 
         var aqiValues = new int?[] { aqiPM2_5, aqiPM10, aqiNO2, aqiSO2, aqiCO, aqiO3 };
         return aqiValues.Max();
+    }
+
+    /// <summary>
+    /// Find the most severe weather, otherwise return the most frequent one.
+    /// </summary>
+    private static WmoWeatherCode GetMostSevereWeather(IEnumerable<WmoWeatherCode> hourlyWeatherCodes)
+    {
+        var groupedWeather = hourlyWeatherCodes
+            .GroupBy(code => code)
+            .Select(group => new { WeatherCode = group.Key, Count = group.Count() });
+
+        var maxSeverity = groupedWeather.Max(g => WeatherUtil.GetSeverity(g.WeatherCode));
+
+        var mostSevereWeather = groupedWeather
+            .Where(g => WeatherUtil.GetSeverity(g.WeatherCode) == maxSeverity)
+            .OrderByDescending(g => g.Count)
+            .First();
+
+        return mostSevereWeather.WeatherCode;
     }
 
     // Ref:
